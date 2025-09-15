@@ -28,7 +28,7 @@ DisplaySSD1306_128x64_I2C display(
 STATE currentState = STATE::SET_TIMER;
 STATE lastState = STATE::INIT;
 byte minutes; // Timer (minutes)
-unsigned int countdown, totalCount; // Timer countdown
+unsigned int count, totalCount; // Timer count
 unsigned long lastMillis; // Action delays without blocking
 bool hasUpdate; // LCD updates
 unsigned long idleCount;
@@ -118,7 +118,7 @@ void updateTimerState(Key key) {
     case Key::SELECT:
       if (minutes > 0) {
         //preferences.setBytes("timer", minutes, 1); // Store to memory
-        totalCount, countdown = minutes * 60; // to seconds
+        totalCount = minutes * 60; // to seconds
         count = 0;
         lastMillis = millis();
         currentState = STATE::WORKING;
@@ -150,15 +150,15 @@ void doStateActions() {
 
   if (currentState == STATE::WORKING) {
 
-    // Countdown
-    if (countdown > 0) {
+    // Count
+    if (count < totalCount) {
 
       // ===== METHOD 1: Has "drift"
       /*
       currentMilis = millis();
       if (currentMilis - previousMilis >= 1000) {
         previousMilis = currentMilis
-        countdown--;
+        count++;
       }
       */
 
@@ -166,13 +166,13 @@ void doStateActions() {
       if (millis() - lastMillis >= 1000) {
         setMosfet(true);
         lastMillis += 1000;
-        countdown--;
+        count++;
         hasUpdate = true;
       }
 
     } else {
       // Finish count
-      Serial.println("[Info] Countdown: FINISHED");
+      Serial.println("[Info] Count: FINISHED");
       setMosfet(false);
       currentState = STATE::SET_TIMER;
       hasUpdate = true;
@@ -243,13 +243,13 @@ void updateScreen() {
 
       if (stateChanged)
         Serial.println("[SCREEN] WORKING");
-      Serial.print("[Info] Countdown: ");
-      Serial.println(countdown);
+      Serial.print("[Info] Count: ");
+      Serial.println(count);
 
       if (stateChanged)
         display.printFixed(0, 0, "Watering", STYLE_NORMAL);
 
-      int percent = map(countdown, totalCount, 0, 0, 100);
+      int percent = map(count, 0, totalCount, 0, 100);
       display.drawProgressBar(percent);
       break;
     // case STATE::FINISHED:
