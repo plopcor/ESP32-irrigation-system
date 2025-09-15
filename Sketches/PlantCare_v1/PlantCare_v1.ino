@@ -2,6 +2,7 @@
 #include "Keys.h"
 #include "State.h"
 #include <Preferences.h>
+#include "Context.h"
 
 #define DISPLAY_ADDR 0x3C
 #define DISPLAY_SCL_PIN 6 // ESP32-Dev: 22, ESP32-C3: 9 or 6
@@ -24,16 +25,8 @@ DisplaySSD1306_128x64_I2C display(
   -1, { -1, DISPLAY_ADDR, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, 0}  
 );
 
-// Variables and STATE
-STATE currentState = STATE::SET_TIMER;
-STATE lastState = STATE::INIT;
-byte minutes; // Timer (minutes)
-unsigned int count, totalCount; // Timer count
-unsigned long lastMillis; // Action delays without blocking
-bool hasUpdate; // LCD updates
-unsigned long idleCount;
-
-uint8_t _fontHeight = 8;
+// App context and data
+AppContext ctx;
 
 // getFont() @ https://codedocs.xyz/lexus2k/lcdgfx/class_nano_display_base.html#a7a95824cfe5976a05b8c44390a8c72bf
 // getHeader() @ https://codedocs.xyz/lexus2k/lcdgfx/class_nano_font.html#a827aff2a9659a43607a6cd09c03ec27d
@@ -73,9 +66,10 @@ void setup() {
   display.setFixedFont( ssd1306xled_font8x16 );
   display.begin();
   display.clear();
-  _fontHeight = display.getFont().getHeader().height / 2;
+  ctx.display.fontHeight = display.getFont().getHeader().height / 2;
 
-  hasUpdate = true;
+  ctx.state.current = STATE::SET_TIMER;
+  ctx.display.hasUpdate = true;
 }
 
 void loop() {
@@ -84,10 +78,10 @@ void loop() {
   doStateActions();
 
   // Update screen if needed
-  if (hasUpdate) {
+  if (ctx.display.hasUpdate) {
     updateScreen();
-    hasUpdate = false;
-    lastState = currentState;
+    ctx.display.hasUpdate = false;
+    ctx.state.last = ctx.state.current;
   }
 
   delay(10);
@@ -96,7 +90,7 @@ void loop() {
 // Handle keys
 void keyPressed(Key keyPressed) {
 
-  switch(currentState) {
+  switch(ctx.state.current) {
     case STATE::SET_TIMER:
       updateTimerState(keyPressed);
       break;
@@ -110,19 +104,25 @@ void keyPressed(Key keyPressed) {
 void updateTimerState(Key key) {
   switch (key) {
     case Key::UP:
-      if (minutes < 255) { minutes += 1; hasUpdate = true; }
+      if (ctx.irrigation.minutes < 255) {
+        ctx.irrigation.minutes += 1;
+        ctx.display.hasUpdate = true;
+      }
       break;
     case Key::DOWN:
-      if (minutes > 0) { minutes -= 1; hasUpdate = true; }
+      if (ctx.irrigation.minutes > 0) {
+        ctx.irrigation.minutes -= 1;
+        ctx.display.hasUpdate = true;
+      }
       break;
     case Key::SELECT:
-      if (minutes > 0) {
+      if (ctx.irrigation.minutes > 0) {
         //preferences.setBytes("timer", minutes, 1); // Store to memory
-        totalCount = minutes * 60; // to seconds
-        count = 0;
-        lastMillis = millis();
-        currentState = STATE::WORKING;
-        hasUpdate = true;
+        ctx.irrigation.totalCount = ctx.irrigation.minutes * 60; // to seconds
+        ctx.irrigation.count = 0;
+        ctx.millis = millis();
+        ctx.state.current = STATE::WORKING;
+        ctx.display.hasUpdate = true;
         return;
       }
       break;
@@ -138,8 +138,8 @@ void updateTimerState(Key key) {
 void updateWorkingState(Key key) {
   switch(key) {
     case Key::BACK:
-      currentState = STATE::SET_TIMER;
-      hasUpdate = true;
+      ctx.state.current = STATE::SET_TIMER;
+      ctx.display.hasUpdate = true;
     break;
   }
 }
@@ -148,10 +148,10 @@ void updateWorkingState(Key key) {
 // Main loop/actions update
 void doStateActions() {
 
-  if (currentState == STATE::WORKING) {
+  if (ctx.state.current == STATE::WORKING) {
 
     // Count
-    if (count < totalCount) {
+    if (ctx.irrigation.count < ctx.irrigation.totalCount) {
 
       // ===== METHOD 1: Has "drift"
       /*
@@ -163,41 +163,46 @@ void doStateActions() {
       */
 
       // ==== METHOD 2
-      if (millis() - lastMillis >= 1000) {
+      if (millis() - ctx.millis >= 1000) {
         setMosfet(true);
-        lastMillis += 1000;
-        count++;
-        hasUpdate = true;
+        ctx.millis += 1000;
+        ctx.irrigation.count++;
+        ctx.display.hasUpdate = true;
       }
 
     } else {
       // Finish count
       Serial.println("[Info] Count: FINISHED");
       setMosfet(false);
-      currentState = STATE::SET_TIMER;
-      hasUpdate = true;
+      ctx.state.current = STATE::SET_TIMER;
+      ctx.display.hasUpdate = true;
     }
     
     //return;
   }
 
   // IDLE check
-  if (currentState == STATE::SET_TIMER) {
+  if (ctx.state.current == STATE::SET_TIMER) {
 
-    // Ignore when navigating to SET_TIME (state changes) and if input is sent (hasUpdate true)
-    if (lastState != currentState || hasUpdate) { // Don't count IDLE when changing to SET_TIMER state
-      idleCount = 0;
+    // Ignore when
+    // - Navigating to SET_TIME (state changed to SET_TIMER)
+    // - Input is sent (hasUpdate true)
+    if (ctx.state.last != ctx.state.current || ctx.display.hasUpdate) {
+
+      ctx.display.idleCount = 0;
       return;
+
     } else {
 
       // Check if idle (no input) and deep sleep
-      if (millis() - lastMillis >= 1000) {
-        lastMillis += 1000;
-        idleCount++;
-        if (idleCount >= IDLE_TIME)
+      if (millis() - ctx.millis >= 1000) {
+        ctx.millis += 1000;
+        ctx.display.idleCount++;
+        if (ctx.display.idleCount >= IDLE_TIME)
           doDeepSleep();
         return;
       }
+
     }
   }
 
@@ -206,12 +211,12 @@ void doStateActions() {
 // Screen updates
 void updateScreen() {
 
-  bool stateChanged = lastState != currentState;
+  bool stateChanged = ctx.state.last != ctx.state.current;
 
   if (stateChanged)
     display.clear();
 
-  switch (currentState) {
+  switch (ctx.state.current) {
     case STATE::SET_TIMER:
       // LCD write "Timer"
 
@@ -226,17 +231,17 @@ void updateScreen() {
       }
 
       // Print minutes (x2 fontsize)
-      display.printFixedN(0, _fontHeight * 2, byteToFixedChars(minutes), STYLE_BOLD, 1);
+      display.printFixedN(0, ctx.display.fontHeight * 2, byteToFixedChars(ctx.irrigation.minutes), STYLE_BOLD, 1);
 
       // Calculate Liters (use L/min from pump store specifications)
-      display.setTextCursor(0, _fontHeight * 6);
-      display.write(uintToStr( (unsigned int)minutes * 3));
+      display.setTextCursor(0, ctx.display.fontHeight * 6);
+      display.write(uintToStr( (unsigned int)ctx.irrigation.minutes * 3));
       display.write("L  ");
       // display.printFixed(0, 24, "Liters: ", STYLE_BOLD);
       // display.printFixed(10, 25, uintToStr( (unsigned int)minutes * 3), STYLE_BOLD);
 
       Serial.print("[Info] Timer (min): ");
-      Serial.println(minutes);
+      Serial.println(ctx.irrigation.minutes);
 
       break;
     case STATE::WORKING:
@@ -244,12 +249,16 @@ void updateScreen() {
       if (stateChanged)
         Serial.println("[SCREEN] WORKING");
       Serial.print("[Info] Count: ");
-      Serial.println(count);
+      Serial.println(ctx.irrigation.count);
 
       if (stateChanged)
         display.printFixed(0, 0, "Watering", STYLE_NORMAL);
 
-      int percent = map(count, 0, totalCount, 0, 100);
+      int percent = map(
+        ctx.irrigation.count,
+        0, ctx.irrigation.totalCount,
+        0, 100
+      );
       display.drawProgressBar(percent);
       break;
     // case STATE::FINISHED:
