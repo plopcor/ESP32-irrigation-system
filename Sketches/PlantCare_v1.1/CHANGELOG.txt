@@ -1,0 +1,5 @@
+
+# Version 1.1
+Add menu
+Add option to schedule irrigation (frequency and duration)
+Improved code, encapsulated with structs and split functions in own files
